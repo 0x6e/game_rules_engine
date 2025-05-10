@@ -6,26 +6,9 @@ use std::collections::HashMap;
 use crate::{GameEvent, Player, PlayerId};
 
 #[derive(Debug, PartialEq)]
-pub enum GameEventType {
-    PlayerConnected,
-    PlayerDisconnected,
-    DiceRoll,
-}
-
-impl GameEvent {
-    pub fn event_type(&self) -> GameEventType {
-        match self {
-            GameEvent::PlayerConnected { .. } => GameEventType::PlayerConnected,
-            GameEvent::PlayerDisconnected { .. } => GameEventType::PlayerDisconnected,
-            GameEvent::DiceRoll { .. } => GameEventType::DiceRoll,
-        }
-    }
-}
-
-#[derive(Debug, PartialEq)]
 pub enum RuleResult {
     Complete,
-    WaitingForEvent { event_type: GameEventType },
+    WaitingForEvent,
     GameOver,
 }
 
@@ -44,6 +27,7 @@ pub struct GameState {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineStatus {
     Ready,
+    WaitingForEvent,
     GameOver,
 }
 
@@ -51,7 +35,6 @@ pub struct GameEngine {
     game_state: GameState,
     current_rule_chain: Vec<Box<dyn Rule>>,
     current_rule_index: usize,
-    waiting_for_event: Option<GameEventType>,
     engine_status: EngineStatus,
 }
 
@@ -61,7 +44,6 @@ impl GameEngine {
             game_state: GameState::default(),
             current_rule_chain: rule_chain,
             current_rule_index: 0,
-            waiting_for_event: None,
             engine_status: EngineStatus::Ready,
         }
     }
@@ -74,8 +56,8 @@ impl GameEngine {
         self.current_rule_index
     }
 
-    pub fn waiting_for_event(&self) -> &Option<GameEventType> {
-        &self.waiting_for_event
+    pub fn is_waiting_for_event(&self) -> bool {
+        self.engine_status == EngineStatus::WaitingForEvent
     }
 
     pub fn engine_status(&self) -> EngineStatus {
@@ -104,35 +86,32 @@ impl GameEngine {
     }
 
     pub fn consume(&mut self, event: &GameEvent) {
-        match &self.waiting_for_event {
-            Some(waiting) => {
-                assert!(self.current_rule_index < self.current_rule_chain.len());
-                debug_assert!(self.validate(event));
-
-                println!("[Engine] Received event '{:?}', resuming...", event);
-                let rule = &self.current_rule_chain[self.current_rule_index];
-                let result = rule.consume(&mut self.game_state, event);
-                self.consume_rule_result(result);
-            }
-            None => {
-                println!("[Engine] Ingorning unexpected event: '{:?}'", event);
-            }
+        if !self.is_waiting_for_event() {
+            println!("[Engine] Ingorning unexpected event: '{:?}'", event);
+            return;
         }
+
+        assert!(self.current_rule_index < self.current_rule_chain.len());
+
+        println!("[Engine] Received event '{:?}', resuming...", event);
+        debug_assert!(self.validate(event));
+        let rule = &self.current_rule_chain[self.current_rule_index];
+        let result = rule.consume(&mut self.game_state, event);
+        self.consume_rule_result(result);
     }
 
     fn consume_rule_result(&mut self, result: RuleResult) {
         match result {
             RuleResult::Complete => {
-                self.waiting_for_event = None;
+                self.engine_status = EngineStatus::Ready;
                 self.current_rule_index += 1;
                 self.process_next_rule();
             }
-            RuleResult::WaitingForEvent { event_type } => {
-                self.waiting_for_event = Some(event_type);
+            RuleResult::WaitingForEvent => {
+                self.engine_status = EngineStatus::WaitingForEvent;
             }
             RuleResult::GameOver {} => {
                 println!("[Engine] Game over");
-                self.waiting_for_event = None;
                 self.engine_status = EngineStatus::GameOver;
             }
         };
