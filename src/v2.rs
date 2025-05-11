@@ -1,9 +1,7 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use std::collections::HashMap;
-
-use crate::{GameEvent, Player, PlayerId};
+use crate::GameEvent;
 
 #[derive(Debug, PartialEq)]
 pub enum RuleResult {
@@ -12,16 +10,12 @@ pub enum RuleResult {
     GameOver,
 }
 
-pub trait Rule: Send + Sync {
-    fn apply(&self, state: &mut GameState) -> RuleResult;
-    fn validate(&self, state: &GameState, event: &GameEvent) -> bool;
-    fn consume(&self, state: &mut GameState, event: &GameEvent) -> RuleResult;
-}
+pub trait GameState: Default {}
 
-#[derive(Default)]
-pub struct GameState {
-    /// The players in the game.
-    pub players: HashMap<PlayerId, Player>,
+pub trait Rule<GameStateT: GameState>: Send + Sync {
+    fn apply(&self, state: &mut GameStateT) -> RuleResult;
+    fn validate(&self, state: &GameStateT, event: &GameEvent) -> bool;
+    fn consume(&self, state: &mut GameStateT, event: &GameEvent) -> RuleResult;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,24 +25,24 @@ pub enum EngineStatus {
     GameOver,
 }
 
-pub struct GameEngine {
-    game_state: GameState,
-    current_rule_chain: Vec<Box<dyn Rule>>,
+pub struct GameEngine<GameStateT: GameState> {
+    game_state: GameStateT,
+    current_rule_chain: Vec<Box<dyn Rule<GameStateT>>>,
     current_rule_index: usize,
     engine_status: EngineStatus,
 }
 
-impl GameEngine {
-    pub fn new(rule_chain: Vec<Box<dyn Rule>>) -> Self {
+impl<GameStateT: GameState> GameEngine<GameStateT> {
+    pub fn new(rule_chain: Vec<Box<dyn Rule<GameStateT>>>) -> Self {
         Self {
-            game_state: GameState::default(),
+            game_state: GameStateT::default(),
             current_rule_chain: rule_chain,
             current_rule_index: 0,
             engine_status: EngineStatus::Ready,
         }
     }
 
-    pub fn game_state(&self) -> &GameState {
+    pub fn game_state(&self) -> &GameStateT {
         &self.game_state
     }
 
