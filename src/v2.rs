@@ -1,7 +1,8 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-use crate::GameEvent;
+use serde::{de::DeserializeOwned, Serialize};
+use std::fmt::Debug;
 
 #[derive(Debug, PartialEq)]
 pub enum RuleResult {
@@ -12,11 +13,15 @@ pub enum RuleResult {
 
 pub trait GameState: Default {}
 
-pub trait Rule<GameStateT: GameState>: Send + Sync {
+pub trait GameEvent: Debug + DeserializeOwned + Serialize {}
+
+pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
     fn apply(&self, state: &mut GameStateT) -> RuleResult;
-    fn validate(&self, state: &GameStateT, event: &GameEvent) -> bool;
-    fn consume(&self, state: &mut GameStateT, event: &GameEvent) -> RuleResult;
+    fn validate(&self, state: &GameStateT, event: &GameEventT) -> bool;
+    fn consume(&self, state: &mut GameStateT, event: &GameEventT) -> RuleResult;
 }
+
+pub type RuleList<S, E> = Vec<Box<dyn Rule<S, E>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineStatus {
@@ -25,15 +30,15 @@ pub enum EngineStatus {
     GameOver,
 }
 
-pub struct GameEngine<GameStateT: GameState> {
+pub struct GameEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
-    current_rule_chain: Vec<Box<dyn Rule<GameStateT>>>,
+    current_rule_chain: RuleList<GameStateT, GameEventT>,
     current_rule_index: usize,
     engine_status: EngineStatus,
 }
 
-impl<GameStateT: GameState> GameEngine<GameStateT> {
-    pub fn new(rule_chain: Vec<Box<dyn Rule<GameStateT>>>) -> Self {
+impl<GameStateT: GameState, GameEventT: GameEvent> GameEngine<GameStateT, GameEventT> {
+    pub fn new(rule_chain: Vec<Box<dyn Rule<GameStateT, GameEventT>>>) -> Self {
         Self {
             game_state: GameStateT::default(),
             current_rule_chain: rule_chain,
@@ -70,7 +75,7 @@ impl<GameStateT: GameState> GameEngine<GameStateT> {
         self.consume_rule_result(result);
     }
 
-    pub fn validate(&self, event: &GameEvent) -> bool {
+    pub fn validate(&self, event: &GameEventT) -> bool {
         if self.current_rule_index >= self.current_rule_chain.len() {
             return false;
         }
@@ -79,7 +84,7 @@ impl<GameStateT: GameState> GameEngine<GameStateT> {
         current_rule.validate(&self.game_state, event)
     }
 
-    pub fn consume(&mut self, event: &GameEvent) {
+    pub fn consume(&mut self, event: &GameEventT) {
         if !self.is_waiting_for_event() {
             println!("[Engine] Ingorning unexpected event: '{:?}'", event);
             return;
