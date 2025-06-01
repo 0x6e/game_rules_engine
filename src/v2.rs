@@ -47,6 +47,18 @@ impl<GameStateT: GameState, GameEventT: GameEvent> GameEngine<GameStateT, GameEv
         }
     }
 
+    pub fn new_with_state(
+        rule_chain: Vec<Box<dyn Rule<GameStateT, GameEventT>>>,
+        initial_state: GameStateT,
+    ) -> Self {
+        Self {
+            game_state: initial_state,
+            current_rule_chain: rule_chain,
+            current_rule_index: 0,
+            engine_status: EngineStatus::Ready,
+        }
+    }
+
     pub fn game_state(&self) -> &GameStateT {
         &self.game_state
     }
