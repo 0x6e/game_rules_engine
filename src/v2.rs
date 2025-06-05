@@ -121,7 +121,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> GameEngine<GameStateT, GameEv
             RuleResult::WaitingForEvent => {
                 self.engine_status = EngineStatus::WaitingForEvent;
             }
-            RuleResult::GameOver {} => {
+            RuleResult::GameOver => {
                 println!("[Engine] Game over");
                 self.engine_status = EngineStatus::GameOver;
             }
