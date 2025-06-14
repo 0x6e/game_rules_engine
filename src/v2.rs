@@ -30,14 +30,14 @@ pub enum EngineStatus {
     GameOver,
 }
 
-pub struct GameEngine<GameStateT: GameState, GameEventT: GameEvent> {
+pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
     current_rule_chain: RuleList<GameStateT, GameEventT>,
     current_rule_index: usize,
     engine_status: EngineStatus,
 }
 
-impl<GameStateT: GameState, GameEventT: GameEvent> GameEngine<GameStateT, GameEventT> {
+impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameEventT> {
     pub fn new(rule_chain: Vec<Box<dyn Rule<GameStateT, GameEventT>>>) -> Self {
         Self {
             game_state: GameStateT::default(),
