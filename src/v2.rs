@@ -184,7 +184,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestGameState {
-        sum: u32,
+        sum: i32,
         waiting_for_event: Option<TestWaitingFor>,
     }
 
@@ -192,7 +192,7 @@ mod tests {
 
     #[derive(Debug, Serialize, Deserialize)]
     enum TestGameEvent {
-        AddNumber { number: u32 },
+        AddNumber { number: i32 },
         PlaceholderEvent, // Placeholder for other events, prevents irrefultable_let_patterns warnings
     }
 
@@ -238,6 +238,27 @@ mod tests {
         }
     }
 
+    /// A rule that subtracts 10 from the sum in the game state. It does not validate or consume, it
+    /// expects to be applied and immediately complete.
+    #[derive(Debug)]
+    struct SubtractTenRule;
+
+    impl Rule<TestGameState, TestGameEvent> for SubtractTenRule {
+        fn apply(&mut self, state: &mut TestGameState) -> RuleResult {
+            assert!(state.waiting_for_event.is_none());
+            state.sum -= 10;
+            RuleResult::Complete
+        }
+
+        fn validate(&self, _state: &TestGameState, _event: &TestGameEvent) -> bool {
+            false
+        }
+
+        fn consume(&mut self, _state: &mut TestGameState, event: &TestGameEvent) -> RuleResult {
+            panic!("{:?} received unexpected event: {:?}", self, event);
+        }
+    }
+
     #[test]
     fn process_rules_only_calls_apply_once() {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
@@ -262,6 +283,25 @@ mod tests {
         assert_eq!(engine.current_rule_index(), 0);
         assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
         assert_eq!(engine.is_waiting_for_event(), true);
+    }
+
+    #[test]
+    fn apply_may_complete_a_rule() {
+        let rule_chain: TestRuleList = vec![Box::new(SubtractTenRule)];
+        let mut engine = RulesEngine::new(rule_chain);
+
+        assert_eq!(engine.current_rule_index(), 0);
+        assert_eq!(engine.engine_status(), EngineStatus::Ready);
+        assert_eq!(engine.is_waiting_for_event(), false);
+
+        // Begin processing rules
+        engine.process_rules();
+
+        // Verify that the rule was applied and completed
+        assert_eq!(engine.current_rule_index(), 1);
+        assert_eq!(engine.engine_status(), EngineStatus::Ready);
+        assert_eq!(engine.is_waiting_for_event(), false);
+        assert_eq!(engine.game_state.sum, -10); // Default state is 0, so it should be -10 now
     }
 
     #[test]
