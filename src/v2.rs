@@ -84,6 +84,11 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             return;
         }
 
+        if self.is_waiting_for_event() {
+            println!("[Engine] Waiting for event, skipping rule application");
+            return;
+        }
+
         let rule = &self.current_rule_chain[self.current_rule_index];
         let result = rule.apply(&mut self.game_state);
         self.consume_rule_result(result);
@@ -191,6 +196,32 @@ mod tests {
             state.waiting_for_event = None;
             RuleResult::Complete
         }
+    }
+
+    #[test]
+    fn process_rules_only_calls_apply_once() {
+        let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
+        let mut engine = RulesEngine::new(rule_chain);
+
+        assert_eq!(engine.current_rule_index(), 0);
+        assert_eq!(engine.engine_status(), EngineStatus::Ready);
+        assert_eq!(engine.is_waiting_for_event(), false);
+
+        // Begin processing rules
+        engine.process_rules();
+
+        // Verify that we are now waiting for an event
+        assert_eq!(engine.current_rule_index(), 0);
+        assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
+        assert_eq!(engine.is_waiting_for_event(), true);
+
+        // Verify that calling process_rules again does not call apply again
+        engine.process_rules();
+
+        // We should still be waiting for an event, and the rule should not have been applied again
+        assert_eq!(engine.current_rule_index(), 0);
+        assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
+        assert_eq!(engine.is_waiting_for_event(), true);
     }
 
     #[test]
