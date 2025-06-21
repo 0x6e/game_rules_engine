@@ -130,3 +130,112 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         };
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct TestGameState {
+        sum: u32,
+        waiting_for_event: Option<TestWaitingFor>,
+    }
+
+    impl GameState for TestGameState {}
+
+    #[derive(Debug, Serialize, Deserialize)]
+    enum TestGameEvent {
+        AddNumber { number: u32 },
+        PlaceholderEvent, // Placeholder for other events, prevents irrefultable_let_patterns warnings
+    }
+
+    impl GameEvent for TestGameEvent {}
+
+    #[derive(Debug, PartialEq)]
+    enum TestWaitingFor {
+        AddNumber,
+    }
+
+    type TestRuleList = RuleList<TestGameState, TestGameEvent>;
+
+    /// A rule that adds even numbers to the sum in the game state. It waits for a
+    /// [TestGameEvent::AddNumber], validates that the number is event, and applies the event to the
+    /// game state.
+    #[derive(Debug)]
+    struct AddEvenNumbersRule;
+
+    impl Rule<TestGameState, TestGameEvent> for AddEvenNumbersRule {
+        fn apply(&self, state: &mut TestGameState) -> RuleResult {
+            assert!(state.waiting_for_event.is_none());
+            assert_eq!(state.sum, 0);
+            state.waiting_for_event = Some(TestWaitingFor::AddNumber);
+            RuleResult::WaitingForEvent
+        }
+
+        fn validate(&self, _state: &TestGameState, event: &TestGameEvent) -> bool {
+            let TestGameEvent::AddNumber { number } = event else {
+                return false;
+            };
+
+            *number % 2 == 0
+        }
+
+        fn consume(&self, state: &mut TestGameState, event: &TestGameEvent) -> RuleResult {
+            let TestGameEvent::AddNumber { number } = event else {
+                panic!("{:?} received unexpected event: {:?}", self, event);
+            };
+
+            state.sum += number;
+            state.waiting_for_event = None;
+            RuleResult::Complete
+        }
+    }
+
+    #[test]
+    fn test_rules_engine() {
+        let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
+        let mut engine = RulesEngine::new(rule_chain);
+
+        assert_eq!(engine.game_state.sum, 0);
+        assert!(engine.game_state.waiting_for_event.is_none());
+
+        assert_eq!(engine.engine_status(), EngineStatus::Ready);
+        assert_eq!(engine.is_waiting_for_event(), false);
+        assert_eq!(engine.current_rule_index(), 0);
+
+        engine.process_next_rule();
+
+        let verify_rule_0_is_waiting_for_event = || {
+            assert_eq!(engine.current_rule_index(), 0);
+            assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
+            assert_eq!(engine.is_waiting_for_event(), true);
+        };
+        verify_rule_0_is_waiting_for_event();
+
+        // Expect that an invalid event is rejected by the engine, and does not modify the game state
+        let invalid_event = TestGameEvent::AddNumber { number: 1 };
+        assert_eq!(engine.validate(&invalid_event), false);
+        assert_eq!(engine.game_state.sum, 0);
+
+        verify_rule_0_is_waiting_for_event();
+
+        // Expect that a valid event is accepted by the engine, but does not modify the game state
+        let valid_event = TestGameEvent::AddNumber { number: 2 };
+        assert_eq!(engine.validate(&valid_event), true);
+        assert_eq!(engine.game_state.sum, 0);
+
+        verify_rule_0_is_waiting_for_event();
+
+        // Expect that consuming a valid event updates the game state and progresses to the next rule
+        engine.consume(&valid_event);
+        assert_eq!(engine.game_state.sum, 2);
+        assert!(engine.game_state.waiting_for_event.is_none());
+
+        // Verify that the engine has moved to the next rule
+        assert_eq!(engine.current_rule_index(), 1);
+        assert_eq!(engine.engine_status(), EngineStatus::Ready);
+        assert_eq!(engine.is_waiting_for_event(), false);
+    }
+}
