@@ -1,37 +1,65 @@
-#![warn(missing_docs)]
+#![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-//! This module provides a rules engine for games, allowing for the definition and application of game rules to a game state.
+//! This module provides a rules engine for games, allowing for the definition and application of
+//! game rules to a game state.
 
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 
+/// The possible results of a [Rule] consuming a game event.
 #[derive(Debug, PartialEq)]
 pub enum RuleResult {
+    /// The rule has completed successfully, and the engine can proceed to the next rule.
     Complete,
+
+    /// The rule is waiting for an event to be consumed before it can proceed.
     WaitingForEvent,
+
+    /// The game is over, and no further rules can be processed.
     GameOver,
 }
 
+/// A trait representing the game state, which must implement `Default` to allow for initialization.
 pub trait GameState: Default {}
 
+/// A trait representing a game event, which must implement `Debug`, `DeserializeOwned`, and
+/// `Serialize` for serialization and deserialization.
 pub trait GameEvent: Debug + DeserializeOwned + Serialize {}
 
+/// A trait representing a rule that can be applied to a game state. It consumes game events and
+/// modifies the game state accordingly.
 pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
+    /// Applies the initial state of the rule to the game state, modifying it as necessary. Returns
+    /// a [RuleResult] indicating the outcome.
     fn apply(&self, state: &mut GameStateT) -> RuleResult;
+
+    /// Validates whether a given game event is applicable to the current game state and rule.
     fn validate(&self, state: &GameStateT, event: &GameEventT) -> bool;
+
+    /// Consumes a game event, modifying the game state and returning a [RuleResult] indicating the
+    /// outcome.
     fn consume(&self, state: &mut GameStateT, event: &GameEventT) -> RuleResult;
 }
 
+/// A type alias for a list of rules, where each rule is a boxed trait object that implements the
+/// [Rule] trait.
 pub type RuleList<S, E> = Vec<Box<dyn Rule<S, E>>>;
 
+/// An enumeration representing the status of the rules engine.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineStatus {
+    /// The engine is ready to process rules.
     Ready,
+
+    /// The engine is waiting for an event to be consumed before proceeding with the next rule.
     WaitingForEvent,
+
+    /// The engine has reached a game-over state, and no further rules can be processed.
     GameOver,
 }
 
+/// A rules engine that processes a chain of rules against a game state and handles game events.
 pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
     current_rule_chain: RuleList<GameStateT, GameEventT>,
@@ -40,6 +68,7 @@ pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameEventT> {
+    /// Creates a new [RulesEngine] with default game state and a specified rule chain.
     pub fn new(rule_chain: Vec<Box<dyn Rule<GameStateT, GameEventT>>>) -> Self {
         Self {
             game_state: GameStateT::default(),
@@ -49,6 +78,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         }
     }
 
+    /// Creates a new [RulesEngine] with an initial game state and a rule chain.
     pub fn new_with_state(
         rule_chain: Vec<Box<dyn Rule<GameStateT, GameEventT>>>,
         initial_state: GameStateT,
@@ -61,23 +91,28 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         }
     }
 
+    /// Returns a reference to the current game state.
     pub fn game_state(&self) -> &GameStateT {
         &self.game_state
     }
 
+    /// Returns the index of the current rule being processed.
     pub fn current_rule_index(&self) -> usize {
         self.current_rule_index
     }
 
+    /// Returns true if the engine is waiting for an event to be consumed, false otherwise.
     pub fn is_waiting_for_event(&self) -> bool {
         self.engine_status == EngineStatus::WaitingForEvent
     }
 
+    /// Returns the current status of the rules engine.
     pub fn engine_status(&self) -> EngineStatus {
         self.engine_status
     }
 
-    // Process next rule
+    /// Processes the rules in the rule chain, processing as many rules as possible until either all
+    /// rules are processed or the engine is waiting for an event.
     pub fn process_rules(&mut self) {
         if self.current_rule_index >= self.current_rule_chain.len() {
             println!("[Engine] Turn complete!");
@@ -94,6 +129,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         self.consume_rule_result(result);
     }
 
+    /// Returns true if the event is valid for the current rule, false otherwise.
     pub fn validate(&self, event: &GameEventT) -> bool {
         if self.current_rule_index >= self.current_rule_chain.len() {
             return false;
@@ -103,6 +139,10 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         current_rule.validate(&self.game_state, event)
     }
 
+    /// Consumes a game event, processing it through the current rule and updating the game state
+    /// accordingly. If the event causes the current rule to complete, it will continue processing
+    /// as many rules as possible until either all rules are processed or the engine is waiting for
+    /// an event.
     pub fn consume(&mut self, event: &GameEventT) {
         if !self.is_waiting_for_event() {
             println!("[Engine] Ingorning unexpected event: '{:?}'", event);
