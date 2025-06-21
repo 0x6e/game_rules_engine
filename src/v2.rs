@@ -260,13 +260,28 @@ mod tests {
     }
 
     #[test]
-    fn process_rules_only_calls_apply_once() {
+    fn verify_rules_engine_initial_state() {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
-        let mut engine = RulesEngine::new(rule_chain);
+        let engine = RulesEngine::new(rule_chain);
 
         assert_eq!(engine.current_rule_index(), 0);
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
+        assert_eq!(engine.game_state.sum, 0);
+        assert!(engine.game_state.waiting_for_event.is_none());
+    }
+
+    #[test]
+    fn verify_test_game_state_initial_state() {
+        let state: TestGameState = TestGameState::default();
+        assert_eq!(state.sum, 0);
+        assert!(state.waiting_for_event.is_none());
+    }
+
+    #[test]
+    fn process_rules_only_calls_apply_once() {
+        let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
+        let mut engine = RulesEngine::new(rule_chain);
 
         // Begin processing rules
         engine.process_rules();
@@ -290,10 +305,6 @@ mod tests {
         let rule_chain: TestRuleList = vec![Box::new(SubtractTenRule)];
         let mut engine = RulesEngine::new(rule_chain);
 
-        assert_eq!(engine.current_rule_index(), 0);
-        assert_eq!(engine.engine_status(), EngineStatus::Ready);
-        assert_eq!(engine.is_waiting_for_event(), false);
-
         // Begin processing rules
         engine.process_rules();
 
@@ -308,13 +319,6 @@ mod tests {
     fn test_rules_engine() {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
         let mut engine = RulesEngine::new(rule_chain);
-
-        assert_eq!(engine.game_state.sum, 0);
-        assert!(engine.game_state.waiting_for_event.is_none());
-
-        assert_eq!(engine.engine_status(), EngineStatus::Ready);
-        assert_eq!(engine.is_waiting_for_event(), false);
-        assert_eq!(engine.current_rule_index(), 0);
 
         engine.process_rules();
 
