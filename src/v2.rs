@@ -1,6 +1,8 @@
 #![warn(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+//! This module provides a rules engine for games, allowing for the definition and application of game rules to a game state.
+
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 
