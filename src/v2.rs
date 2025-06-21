@@ -317,7 +317,8 @@ mod tests {
 
     #[test]
     fn test_rules_engine() {
-        let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
+        let rule_chain: TestRuleList =
+            vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
         let mut engine = RulesEngine::new(rule_chain);
 
         engine.process_rules();
@@ -345,11 +346,13 @@ mod tests {
 
         // Expect that consuming a valid event updates the game state and progresses to the next rule
         engine.consume(&valid_event);
-        assert_eq!(engine.game_state.sum, 2);
         assert!(engine.game_state.waiting_for_event.is_none());
 
+        // Expect that the SubtractTenRule has been applied
+        assert_eq!(engine.game_state.sum, -8);
+
         // Verify that the engine has moved to the next rule
-        assert_eq!(engine.current_rule_index(), 1);
+        assert_eq!(engine.current_rule_index(), 2);
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
     }
