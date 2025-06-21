@@ -32,14 +32,14 @@ pub trait GameEvent: Debug + DeserializeOwned + Serialize {}
 pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
     /// Applies the initial state of the rule to the game state, modifying it as necessary. Returns
     /// a [RuleResult] indicating the outcome.
-    fn apply(&self, state: &mut GameStateT) -> RuleResult;
+    fn apply(&mut self, state: &mut GameStateT) -> RuleResult;
 
     /// Validates whether a given game event is applicable to the current game state and rule.
     fn validate(&self, state: &GameStateT, event: &GameEventT) -> bool;
 
     /// Consumes a game event, modifying the game state and returning a [RuleResult] indicating the
     /// outcome.
-    fn consume(&self, state: &mut GameStateT, event: &GameEventT) -> RuleResult;
+    fn consume(&mut self, state: &mut GameStateT, event: &GameEventT) -> RuleResult;
 }
 
 /// A type alias for a list of rules, where each rule is a boxed trait object that implements the
@@ -124,7 +124,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             return;
         }
 
-        let rule = &self.current_rule_chain[self.current_rule_index];
+        let rule = &mut self.current_rule_chain[self.current_rule_index];
         let result = rule.apply(&mut self.game_state);
         self.consume_rule_result(result);
     }
@@ -153,7 +153,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
 
         println!("[Engine] Received event '{:?}', resuming...", event);
         debug_assert!(self.validate(event));
-        let rule = &self.current_rule_chain[self.current_rule_index];
+        let rule = &mut self.current_rule_chain[self.current_rule_index];
         let result = rule.consume(&mut self.game_state, event);
         self.consume_rule_result(result);
     }
@@ -212,7 +212,7 @@ mod tests {
     struct AddEvenNumbersRule;
 
     impl Rule<TestGameState, TestGameEvent> for AddEvenNumbersRule {
-        fn apply(&self, state: &mut TestGameState) -> RuleResult {
+        fn apply(&mut self, state: &mut TestGameState) -> RuleResult {
             assert!(state.waiting_for_event.is_none());
             assert_eq!(state.sum, 0);
             state.waiting_for_event = Some(TestWaitingFor::AddNumber);
@@ -227,7 +227,7 @@ mod tests {
             *number % 2 == 0
         }
 
-        fn consume(&self, state: &mut TestGameState, event: &TestGameEvent) -> RuleResult {
+        fn consume(&mut self, state: &mut TestGameState, event: &TestGameEvent) -> RuleResult {
             let TestGameEvent::AddNumber { number } = event else {
                 panic!("{:?} received unexpected event: {:?}", self, event);
             };
