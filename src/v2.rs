@@ -78,7 +78,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
     }
 
     // Process next rule
-    pub fn process_next_rule(&mut self) {
+    pub fn process_rules(&mut self) {
         if self.current_rule_index >= self.current_rule_chain.len() {
             println!("[Engine] Turn complete!");
             return;
@@ -118,7 +118,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             RuleResult::Complete => {
                 self.engine_status = EngineStatus::Ready;
                 self.current_rule_index += 1;
-                self.process_next_rule();
+                self.process_rules();
             }
             RuleResult::WaitingForEvent => {
                 self.engine_status = EngineStatus::WaitingForEvent;
@@ -205,7 +205,7 @@ mod tests {
         assert_eq!(engine.is_waiting_for_event(), false);
         assert_eq!(engine.current_rule_index(), 0);
 
-        engine.process_next_rule();
+        engine.process_rules();
 
         let verify_rule_0_is_waiting_for_event = || {
             assert_eq!(engine.current_rule_index(), 0);
