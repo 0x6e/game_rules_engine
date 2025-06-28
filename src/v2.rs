@@ -46,6 +46,87 @@ pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
 /// [Rule] trait.
 pub type RuleList<S, E> = Vec<Box<dyn Rule<S, E>>>;
 
+/// A composite rule that processes a chain of rules sequentially. It applies each rule in the chain
+/// to the game state, waiting for events as necessary. Once a rule completes, it moves on to the
+/// next rule in the chain. If a rule is waiting for an event, it will not proceed to the next rule
+/// until the event is consumed.
+pub struct CompositeRule<GameStateT: GameState, GameEventT: GameEvent> {
+    rules: RuleList<GameStateT, GameEventT>,
+    current_rule_index: usize,
+    is_waiting_for_event: bool,
+}
+
+impl<GameStateT: GameState, GameEventT: GameEvent> CompositeRule<GameStateT, GameEventT> {
+    /// Creates a new [CompositeRule] with the given list of rules.
+    pub fn new(rule_chain: RuleList<GameStateT, GameEventT>) -> Self {
+        Self {
+            rules: rule_chain,
+            current_rule_index: 0,
+            is_waiting_for_event: false,
+        }
+    }
+
+    fn process_rules(&mut self, state: &mut GameStateT) -> RuleResult {
+        if self.current_rule_index >= self.rules.len() {
+            return RuleResult::Complete;
+        }
+
+        if self.is_waiting_for_event {
+            return RuleResult::WaitingForEvent;
+        }
+
+        let rule = &mut self.rules[self.current_rule_index];
+        let result = rule.apply(state);
+        self.consume_rule_result(state, result)
+    }
+
+    fn consume_rule_result(&mut self, state: &mut GameStateT, result: RuleResult) -> RuleResult {
+        match result {
+            RuleResult::Complete => {
+                self.is_waiting_for_event = false;
+                self.current_rule_index += 1;
+                self.process_rules(state)
+            }
+            RuleResult::WaitingForEvent => {
+                self.is_waiting_for_event = true;
+                RuleResult::WaitingForEvent
+            }
+            RuleResult::GameOver => RuleResult::GameOver,
+        }
+    }
+}
+
+impl<GameStateT: GameState, GameEventT: GameEvent> Rule<GameStateT, GameEventT>
+    for CompositeRule<GameStateT, GameEventT>
+{
+    fn apply(&mut self, state: &mut GameStateT) -> RuleResult {
+        assert_eq!(self.current_rule_index, 0);
+        assert!(!self.rules.is_empty());
+        let rule = &mut self.rules[0];
+        let result = rule.apply(state);
+        self.consume_rule_result(state, result)
+    }
+
+    fn validate(&self, state: &GameStateT, event: &GameEventT) -> bool {
+        if self.current_rule_index >= self.rules.len() {
+            return false;
+        }
+
+        let rule = &self.rules[self.current_rule_index];
+        rule.validate(state, event)
+    }
+
+    fn consume(&mut self, state: &mut GameStateT, event: &GameEventT) -> RuleResult {
+        if self.current_rule_index >= self.rules.len() {
+            return RuleResult::Complete;
+        }
+
+        let rule = &mut self.rules[self.current_rule_index];
+        let result = rule.consume(state, event);
+        self.consume_rule_result(state, result)
+    }
+}
+
 /// An enumeration representing the status of the rules engine.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum EngineStatus {
@@ -259,6 +340,19 @@ mod tests {
         }
     }
 
+    /// A [CompositeRule] that combines [AddEvenNumbersRule] and [SubtractTenRule]. Demonstrates how
+    /// to provide a specific combination of rules as a composite rule.
+    struct AddEvenNumbersThenSubtractTenRule;
+
+    impl AddEvenNumbersThenSubtractTenRule {
+        pub fn new() -> CompositeRule<TestGameState, TestGameEvent> {
+            CompositeRule::new(vec![
+                Box::new(AddEvenNumbersRule),
+                Box::new(SubtractTenRule),
+            ])
+        }
+    }
+
     #[test]
     fn verify_rules_engine_initial_state() {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
@@ -303,6 +397,18 @@ mod tests {
     #[test]
     fn apply_may_complete_a_rule() {
         let rule_chain: TestRuleList = vec![Box::new(SubtractTenRule)];
+        apply_may_complete_a_rule_impl(rule_chain);
+    }
+
+    #[test]
+    fn apply_may_complete_a_rule_composite() {
+        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(vec![Box::new(
+            SubtractTenRule,
+        )]))];
+        apply_may_complete_a_rule_impl(rule_chain);
+    }
+
+    fn apply_may_complete_a_rule_impl(rule_chain: TestRuleList) {
         let mut engine = RulesEngine::new(rule_chain);
 
         // Begin processing rules
@@ -319,6 +425,25 @@ mod tests {
     fn test_rules_engine() {
         let rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
+        test_rules_engine_impl(rule_chain);
+    }
+
+    #[test]
+    fn test_rules_engine_composite() {
+        let inner_rule_chain: TestRuleList =
+            vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
+        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
+        test_rules_engine_impl(rule_chain);
+    }
+
+    #[test]
+    fn test_rules_engine_named_composite() {
+        let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersThenSubtractTenRule::new())];
+        test_rules_engine_impl(rule_chain);
+    }
+
+    fn test_rules_engine_impl(rule_chain: TestRuleList) {
+        let rule_chanin_end = rule_chain.len();
         let mut engine = RulesEngine::new(rule_chain);
 
         engine.process_rules();
@@ -352,7 +477,7 @@ mod tests {
         assert_eq!(engine.game_state.sum, -8);
 
         // Verify that the engine has moved to the next rule
-        assert_eq!(engine.current_rule_index(), 2);
+        assert_eq!(engine.current_rule_index(), rule_chanin_end);
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
     }
