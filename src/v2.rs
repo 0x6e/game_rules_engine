@@ -40,90 +40,73 @@ pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
     /// Consumes a game event, modifying the game state and returning a [RuleResult] indicating the
     /// outcome.
     fn consume(&mut self, state: &mut GameStateT, event: &GameEventT) -> RuleResult;
+
+    /// Returns an optional mutable reference to a slice of child rules, if this rule has any. This
+    /// is used for composite rules that contain a chain of sub-rules. If the rule does not have any
+    /// child rules, it should return `None`.
+    fn children(&self) -> Option<&RuleSlice<GameStateT, GameEventT>> {
+        None
+    }
+
+    /// Like [Rule::children], but returns a mutable reference to the child rules.
+    fn children_mut(&mut self) -> Option<&mut RuleSlice<GameStateT, GameEventT>> {
+        None
+    }
 }
 
 /// A type alias for a list of rules, where each rule is a boxed trait object that implements the
 /// [Rule] trait.
 pub type RuleList<S, E> = Vec<Box<dyn Rule<S, E>>>;
 
-/// A composite rule that processes a chain of rules sequentially. It applies each rule in the chain
-/// to the game state, waiting for events as necessary. Once a rule completes, it moves on to the
-/// next rule in the chain. If a rule is waiting for an event, it will not proceed to the next rule
-/// until the event is consumed.
+/// A type alias for a slice into a [RuleList].
+pub type RuleSlice<S, E> = [Box<dyn Rule<S, E>>];
+
+/// A composite rule that contains a chain of sub-rules. This allows for the creation of complex
+/// rules that consist of multiple steps, where each step is represented by a separate rule. The
+/// composite rule itself does not have any behavior, it simply serves as a container for the chain
+/// of sub-rules.
 pub struct CompositeRule<GameStateT: GameState, GameEventT: GameEvent> {
     rules: RuleList<GameStateT, GameEventT>,
-    current_rule_index: usize,
-    is_waiting_for_event: bool,
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> CompositeRule<GameStateT, GameEventT> {
     /// Creates a new [CompositeRule] with the given list of rules.
     pub fn new(rule_chain: RuleList<GameStateT, GameEventT>) -> Self {
-        Self {
-            rules: rule_chain,
-            current_rule_index: 0,
-            is_waiting_for_event: false,
-        }
-    }
-
-    fn process_rules(&mut self, state: &mut GameStateT) -> RuleResult {
-        if self.current_rule_index >= self.rules.len() {
-            return RuleResult::Complete;
-        }
-
-        if self.is_waiting_for_event {
-            return RuleResult::WaitingForEvent;
-        }
-
-        let rule = &mut self.rules[self.current_rule_index];
-        let result = rule.apply(state);
-        self.consume_rule_result(state, result)
-    }
-
-    fn consume_rule_result(&mut self, state: &mut GameStateT, result: RuleResult) -> RuleResult {
-        match result {
-            RuleResult::Complete => {
-                self.is_waiting_for_event = false;
-                self.current_rule_index += 1;
-                self.process_rules(state)
-            }
-            RuleResult::WaitingForEvent => {
-                self.is_waiting_for_event = true;
-                RuleResult::WaitingForEvent
-            }
-            RuleResult::GameOver => RuleResult::GameOver,
-        }
+        Self { rules: rule_chain }
     }
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> Rule<GameStateT, GameEventT>
     for CompositeRule<GameStateT, GameEventT>
 {
-    fn apply(&mut self, state: &mut GameStateT) -> RuleResult {
-        assert_eq!(self.current_rule_index, 0);
-        assert!(!self.rules.is_empty());
-        let rule = &mut self.rules[0];
-        let result = rule.apply(state);
-        self.consume_rule_result(state, result)
+    /// The [CompositeRule] itself does not have any behavior, so applying it simply returns
+    /// [RuleResult::Complete].
+    fn apply(&mut self, _: &mut GameStateT) -> RuleResult {
+        RuleResult::Complete
     }
 
-    fn validate(&self, state: &GameStateT, event: &GameEventT) -> bool {
-        if self.current_rule_index >= self.rules.len() {
-            return false;
-        }
-
-        let rule = &self.rules[self.current_rule_index];
-        rule.validate(state, event)
+    /// The [CompositeRule] itself does not have any behavior, so it does not validate any events.
+    /// This always returns false, and the individual sub-rules are responsible for validating
+    /// events as necessary.
+    fn validate(&self, _: &GameStateT, _: &GameEventT) -> bool {
+        false
     }
 
-    fn consume(&mut self, state: &mut GameStateT, event: &GameEventT) -> RuleResult {
-        if self.current_rule_index >= self.rules.len() {
-            return RuleResult::Complete;
-        }
+    /// The [CompositeRule] itself does not have any behavior, so consuming an event simply returns
+    /// [RuleResult::Complete]. The individual sub-rules are responsible for consuming events and
+    /// modifying the game state as necessary.
+    fn consume(&mut self, _: &mut GameStateT, _: &GameEventT) -> RuleResult {
+        RuleResult::Complete
+    }
 
-        let rule = &mut self.rules[self.current_rule_index];
-        let result = rule.consume(state, event);
-        self.consume_rule_result(state, result)
+    /// Returns the child rules which make up the composite rule.
+    fn children(&self) -> Option<&RuleSlice<GameStateT, GameEventT>> {
+        Some(&self.rules)
+    }
+
+    /// Like [Self::children], but returns a mutable reference to the child rules.
+    fn children_mut(&mut self) -> Option<&mut RuleSlice<GameStateT, GameEventT>> {
+        Some(&mut self.rules)
     }
 }
 
@@ -144,7 +127,7 @@ pub enum EngineStatus {
 pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
     current_rule_chain: RuleList<GameStateT, GameEventT>,
-    current_rule_index: usize,
+    rule_stack: Vec<usize>,
     engine_status: EngineStatus,
 }
 
@@ -154,7 +137,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         Self {
             game_state: GameStateT::default(),
             current_rule_chain: rule_chain,
-            current_rule_index: 0,
+            rule_stack: vec![0],
             engine_status: EngineStatus::Ready,
         }
     }
@@ -167,7 +150,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         Self {
             game_state: initial_state,
             current_rule_chain: rule_chain,
-            current_rule_index: 0,
+            rule_stack: vec![0],
             engine_status: EngineStatus::Ready,
         }
     }
@@ -179,7 +162,10 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
 
     /// Returns the index of the current rule being processed.
     pub fn current_rule_index(&self) -> usize {
-        self.current_rule_index
+        *self
+            .rule_stack
+            .first()
+            .expect("Rule stack should never be empty")
     }
 
     /// Returns true if the engine is waiting for an event to be consumed, false otherwise.
@@ -195,29 +181,40 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
     /// Processes the rules in the rule chain, processing as many rules as possible until either all
     /// rules are processed or the engine is waiting for an event.
     pub fn process_rules(&mut self) {
-        if self.current_rule_index >= self.current_rule_chain.len() {
-            println!("[Engine] Turn complete!");
-            return;
-        }
-
         if self.is_waiting_for_event() {
             println!("[Engine] Waiting for event, skipping rule application");
             return;
         }
 
-        let rule = &mut self.current_rule_chain[self.current_rule_index];
-        let result = rule.apply(&mut self.game_state);
-        self.consume_rule_result(result);
+        let Some(rule) =
+            Self::current_rule_mut(self.current_rule_chain.as_mut_slice(), &self.rule_stack)
+        else {
+            println!("[Engine] Turn complete!");
+            return;
+        };
+
+        match rule.children() {
+            Some(children) => {
+                debug_assert!(!children.is_empty());
+                self.rule_stack.push(0);
+                self.process_rules();
+            }
+            None => {
+                let result = rule.apply(&mut self.game_state);
+                self.consume_rule_result(result);
+            }
+        }
     }
 
     /// Returns true if the event is valid for the current rule, false otherwise.
     pub fn validate(&self, event: &GameEventT) -> bool {
-        if self.current_rule_index >= self.current_rule_chain.len() {
-            return false;
+        match Self::current_rule(self.current_rule_chain.as_slice(), &self.rule_stack) {
+            Some(current_rule) => current_rule.validate(&self.game_state, event),
+            None => {
+                println!("[Engine] No current rule to validate against");
+                false
+            }
         }
-
-        let current_rule = &self.current_rule_chain[self.current_rule_index];
-        current_rule.validate(&self.game_state, event)
     }
 
     /// Consumes a game event, processing it through the current rule and updating the game state
@@ -230,20 +227,27 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             return;
         }
 
-        assert!(self.current_rule_index < self.current_rule_chain.len());
-
         println!("[Engine] Received event '{:?}', resuming...", event);
         debug_assert!(self.validate(event));
-        let rule = &mut self.current_rule_chain[self.current_rule_index];
-        let result = rule.consume(&mut self.game_state, event);
-        self.consume_rule_result(result);
+
+        match Self::current_rule_mut(self.current_rule_chain.as_mut_slice(), &self.rule_stack) {
+            Some(current_rule) => {
+                let result = current_rule.consume(&mut self.game_state, event);
+                self.consume_rule_result(result);
+            }
+            None => {
+                println!("[Engine] No current rule to consume");
+            }
+        }
     }
 
+    /// Consumes the result of applying a rule or consuming an event, updating the engine status and
+    /// advancing to the next rule as necessary.
     fn consume_rule_result(&mut self, result: RuleResult) {
         match result {
             RuleResult::Complete => {
                 self.engine_status = EngineStatus::Ready;
-                self.current_rule_index += 1;
+                self.advance();
                 self.process_rules();
             }
             RuleResult::WaitingForEvent => {
@@ -253,7 +257,86 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
                 println!("[Engine] Game over");
                 self.engine_status = EngineStatus::GameOver;
             }
+        }
+    }
+
+    /// Returns a reference to the current rule being processed, or `None` if there is no current
+    /// rule.
+    fn current_rule<'a>(
+        rule_chain: &'a RuleSlice<GameStateT, GameEventT>,
+        rule_stack: &'a [usize],
+    ) -> Option<&'a dyn Rule<GameStateT, GameEventT>> {
+        let mut rules = rule_chain;
+
+        for &idx in &rule_stack[..rule_stack.len().saturating_sub(1)] {
+            let rule = &rules[idx];
+            rules = rule.children()?;
+        }
+
+        let index = *rule_stack.last()?;
+        let current_rule = rules.get(index)?;
+        Some(current_rule.as_ref())
+    }
+
+    /// Returns a mutable reference to the current rule being processed, or `None` if there is no
+    /// current rule.
+    fn current_rule_mut<'a>(
+        rule_chain: &'a mut RuleSlice<GameStateT, GameEventT>,
+        rule_stack: &'a [usize],
+    ) -> Option<&'a mut Box<dyn Rule<GameStateT, GameEventT>>> {
+        let mut rules = rule_chain;
+
+        for &idx in &rule_stack[..rule_stack.len().saturating_sub(1)] {
+            let rule = &mut rules[idx];
+            rules = rule.children_mut()?;
+        }
+
+        rules.get_mut(*rule_stack.last()?)
+    }
+
+    /// Advances the rule stack to the next rule. If the current rule has siblings, it will move to
+    /// the next sibling. If the current rule is the last sibling, it will pop up to the parent rule
+    /// and advance it, recursively advancing up the stack as necessary. If the stack is at the top
+    /// level and there are no more rules to advance to, it will simply return without modifying the
+    /// stack.
+    fn advance(&mut self) {
+        let siblings = Self::current_sibling_count(&self.current_rule_chain, &self.rule_stack);
+
+        let Some(last) = self.rule_stack.last_mut() else {
+            debug_assert!(false, "rule_stack should not be empty");
+            return;
         };
+
+        *last += 1;
+        if *last < siblings {
+            return;
+        }
+
+        if self.rule_stack.len() == 1 {
+            return;
+        }
+
+        self.rule_stack.pop();
+        self.advance();
+    }
+
+    /// Returns the number of siblings of the current rule, which is the number of rules in the
+    /// current rule chain at the current level of the stack.
+    fn current_sibling_count<'a>(
+        rule_chain: &'a RuleSlice<GameStateT, GameEventT>,
+        rule_stack: &'a [usize],
+    ) -> usize {
+        let mut rules = rule_chain;
+
+        for &idx in &rule_stack[..rule_stack.len().saturating_sub(1)] {
+            let rule = &rules[idx];
+            match rule.children() {
+                Some(r) => rules = r,
+                None => return 0,
+            };
+        }
+
+        rules.len()
     }
 }
 
@@ -432,6 +515,15 @@ mod tests {
     fn test_rules_engine_composite() {
         let inner_rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
+        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
+        test_rules_engine_impl(rule_chain);
+    }
+
+    #[test]
+    fn test_rules_engine_nested_composite() {
+        let inner_rule_chain: TestRuleList =
+            vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
+        let inner_rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
         let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
         test_rules_engine_impl(rule_chain);
     }
