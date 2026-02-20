@@ -7,6 +7,30 @@
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::Debug;
 
+/// An identifier for a rule, which can be used for debugging, logging, and other purposes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RuleId(pub &'static str);
+
+/// A macro to implement the `id` method for a rule, which returns the [RuleId] for that rule. This
+/// is a convenience macro to avoid having to manually implement the `id` method for each rule, and
+/// to ensure that the `id` method is implemented consistently across all rules. The macro takes the
+/// type of the rule and an optional string literal to use as the rule id. If the string literal is
+/// not provided, it will default to the name of the type as the rule id.
+#[macro_export]
+macro_rules! impl_rule_id {
+    ($t:ty, $id:expr) => {
+        impl $t {
+            /// The [RuleId] for this rule.
+            pub fn id() -> RuleId {
+                RuleId($id)
+            }
+        }
+    };
+    ($t:ty) => {
+        impl_rule_id!($t, stringify!($t));
+    };
+}
+
 /// The possible results of a [Rule] consuming a game event.
 #[derive(Debug, PartialEq)]
 pub enum RuleResult {
@@ -30,6 +54,9 @@ pub trait GameEvent: Debug + DeserializeOwned + Serialize {}
 /// A trait representing a rule that can be applied to a game state. It consumes game events and
 /// modifies the game state accordingly.
 pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
+    /// Returns the [RuleId] for this rule.
+    fn id(&self) -> RuleId;
+
     /// Applies the initial state of the rule to the game state, modifying it as necessary. Returns
     /// a [RuleResult] indicating the outcome.
     fn apply(&mut self, state: &mut GameStateT) -> RuleResult;
@@ -66,19 +93,27 @@ pub type RuleSlice<S, E> = [Box<dyn Rule<S, E>>];
 /// composite rule itself does not have any behavior, it simply serves as a container for the chain
 /// of sub-rules.
 pub struct CompositeRule<GameStateT: GameState, GameEventT: GameEvent> {
+    id: RuleId,
     rules: RuleList<GameStateT, GameEventT>,
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> CompositeRule<GameStateT, GameEventT> {
     /// Creates a new [CompositeRule] with the given list of rules.
-    pub fn new(rule_chain: RuleList<GameStateT, GameEventT>) -> Self {
-        Self { rules: rule_chain }
+    pub fn new(id: RuleId, rule_chain: RuleList<GameStateT, GameEventT>) -> Self {
+        Self {
+            id,
+            rules: rule_chain,
+        }
     }
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> Rule<GameStateT, GameEventT>
     for CompositeRule<GameStateT, GameEventT>
 {
+    fn id(&self) -> RuleId {
+        self.id
+    }
+
     /// The [CompositeRule] itself does not have any behavior, so applying it simply returns
     /// [RuleResult::Complete].
     fn apply(&mut self, _: &mut GameStateT) -> RuleResult {
@@ -374,8 +409,13 @@ mod tests {
     /// game state.
     #[derive(Debug)]
     struct AddEvenNumbersRule;
+    impl_rule_id!(AddEvenNumbersRule);
 
     impl Rule<TestGameState, TestGameEvent> for AddEvenNumbersRule {
+        fn id(&self) -> RuleId {
+            AddEvenNumbersRule::id()
+        }
+
         fn apply(&mut self, state: &mut TestGameState) -> RuleResult {
             assert!(state.waiting_for_event.is_none());
             assert_eq!(state.sum, 0);
@@ -406,8 +446,13 @@ mod tests {
     /// expects to be applied and immediately complete.
     #[derive(Debug)]
     struct SubtractTenRule;
+    impl_rule_id!(SubtractTenRule, "SubtractTenRuleId");
 
     impl Rule<TestGameState, TestGameEvent> for SubtractTenRule {
+        fn id(&self) -> RuleId {
+            Self::id()
+        }
+
         fn apply(&mut self, state: &mut TestGameState) -> RuleResult {
             assert!(state.waiting_for_event.is_none());
             state.sum -= 10;
@@ -426,14 +471,25 @@ mod tests {
     /// A [CompositeRule] that combines [AddEvenNumbersRule] and [SubtractTenRule]. Demonstrates how
     /// to provide a specific combination of rules as a composite rule.
     struct AddEvenNumbersThenSubtractTenRule;
+    impl_rule_id!(AddEvenNumbersThenSubtractTenRule);
 
     impl AddEvenNumbersThenSubtractTenRule {
         pub fn new() -> CompositeRule<TestGameState, TestGameEvent> {
-            CompositeRule::new(vec![
-                Box::new(AddEvenNumbersRule),
-                Box::new(SubtractTenRule),
-            ])
+            CompositeRule::new(
+                AddEvenNumbersThenSubtractTenRule::id(),
+                vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)],
+            )
         }
+    }
+
+    #[test]
+    fn verify_rule_id_macro() {
+        assert_eq!(AddEvenNumbersRule::id(), RuleId("AddEvenNumbersRule"));
+    }
+
+    #[test]
+    fn verify_rule_id_macro_with_custom_id() {
+        assert_eq!(SubtractTenRule::id(), RuleId("SubtractTenRuleId"));
     }
 
     #[test]
@@ -485,9 +541,10 @@ mod tests {
 
     #[test]
     fn apply_may_complete_a_rule_composite() {
-        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(vec![Box::new(
-            SubtractTenRule,
-        )]))];
+        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
+            RuleId("TestCompositeRule"),
+            vec![Box::new(SubtractTenRule)],
+        ))];
         apply_may_complete_a_rule_impl(rule_chain);
     }
 
@@ -515,7 +572,10 @@ mod tests {
     fn test_rules_engine_composite() {
         let inner_rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
-        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
+        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
+            RuleId("TestCompositeRule"),
+            inner_rule_chain,
+        ))];
         test_rules_engine_impl(rule_chain);
     }
 
@@ -523,8 +583,14 @@ mod tests {
     fn test_rules_engine_nested_composite() {
         let inner_rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
-        let inner_rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
-        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(inner_rule_chain))];
+        let inner_rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
+            RuleId("TestInnerCompositeRule"),
+            inner_rule_chain,
+        ))];
+        let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
+            RuleId("TestOuterCompositeRule"),
+            inner_rule_chain,
+        ))];
         test_rules_engine_impl(rule_chain);
     }
 
