@@ -11,17 +11,34 @@ use std::fmt::Debug;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RuleId(pub &'static str);
 
-/// A macro to implement the `id` method for a rule, which returns the [RuleId] for that rule. This
-/// is a convenience macro to avoid having to manually implement the `id` method for each rule, and
-/// to ensure that the `id` method is implemented consistently across all rules. The macro takes the
-/// type of the rule and an optional string literal to use as the rule id. If the string literal is
-/// not provided, it will default to the name of the type as the rule id.
+/// A trait representing the identity of a rule, which provides a static and instance method for
+/// retrieving the rule's identifier.
+pub trait RuleIdentity {
+    /// The static [RuleId] for this rule.
+    fn static_id() -> RuleId
+    where
+        Self: Sized;
+
+    /// The [RuleId] for this rule.
+    fn id(&self) -> RuleId;
+}
+
+/// A macro to implement the [RuleIdentity] trait for a rule.
+///
+/// The macro takes the type of the rule and an optional string literal to use as the rule id. If
+/// the string literal is not provided, it will default to the name of the type as the rule id.
 #[macro_export]
 macro_rules! impl_rule_id {
     ($t:ty, $id:expr) => {
-        impl $t {
-            /// The [RuleId] for this rule.
-            pub fn id() -> RuleId {
+        impl RuleIdentity for $t {
+            fn id(&self) -> RuleId {
+                Self::static_id()
+            }
+
+            fn static_id() -> RuleId
+            where
+                Self: Sized,
+            {
                 RuleId($id)
             }
         }
@@ -53,10 +70,7 @@ pub trait GameEvent: Debug + DeserializeOwned + Serialize {}
 
 /// A trait representing a rule that can be applied to a game state. It consumes game events and
 /// modifies the game state accordingly.
-pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: Send + Sync {
-    /// Returns the [RuleId] for this rule.
-    fn id(&self) -> RuleId;
-
+pub trait Rule<GameStateT: GameState, GameEventT: GameEvent>: RuleIdentity + Send + Sync {
     /// Applies the initial state of the rule to the game state, modifying it as necessary. Returns
     /// a [RuleResult] indicating the outcome.
     fn apply(&mut self, state: &mut GameStateT) -> RuleResult;
@@ -107,13 +121,24 @@ impl<GameStateT: GameState, GameEventT: GameEvent> CompositeRule<GameStateT, Gam
     }
 }
 
-impl<GameStateT: GameState, GameEventT: GameEvent> Rule<GameStateT, GameEventT>
+impl<GameStateT: GameState, GameEventT: GameEvent> RuleIdentity
     for CompositeRule<GameStateT, GameEventT>
 {
+    fn static_id() -> RuleId
+    where
+        Self: Sized,
+    {
+        RuleId("CompositeRule")
+    }
+
     fn id(&self) -> RuleId {
         self.id
     }
+}
 
+impl<GameStateT: GameState, GameEventT: GameEvent> Rule<GameStateT, GameEventT>
+    for CompositeRule<GameStateT, GameEventT>
+{
     /// The [CompositeRule] itself does not have any behavior, so applying it simply returns
     /// [RuleResult::Complete].
     fn apply(&mut self, _: &mut GameStateT) -> RuleResult {
@@ -412,10 +437,6 @@ mod tests {
     impl_rule_id!(AddEvenNumbersRule);
 
     impl Rule<TestGameState, TestGameEvent> for AddEvenNumbersRule {
-        fn id(&self) -> RuleId {
-            AddEvenNumbersRule::id()
-        }
-
         fn apply(&mut self, state: &mut TestGameState) -> RuleResult {
             assert!(state.waiting_for_event.is_none());
             assert_eq!(state.sum, 0);
@@ -449,10 +470,6 @@ mod tests {
     impl_rule_id!(SubtractTenRule, "SubtractTenRuleId");
 
     impl Rule<TestGameState, TestGameEvent> for SubtractTenRule {
-        fn id(&self) -> RuleId {
-            Self::id()
-        }
-
         fn apply(&mut self, state: &mut TestGameState) -> RuleResult {
             assert!(state.waiting_for_event.is_none());
             state.sum -= 10;
@@ -476,7 +493,7 @@ mod tests {
     impl AddEvenNumbersThenSubtractTenRule {
         pub fn new() -> CompositeRule<TestGameState, TestGameEvent> {
             CompositeRule::new(
-                AddEvenNumbersThenSubtractTenRule::id(),
+                Self::static_id(),
                 vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)],
             )
         }
@@ -484,12 +501,49 @@ mod tests {
 
     #[test]
     fn verify_rule_id_macro() {
-        assert_eq!(AddEvenNumbersRule::id(), RuleId("AddEvenNumbersRule"));
+        assert_eq!(
+            AddEvenNumbersRule::static_id(),
+            RuleId("AddEvenNumbersRule")
+        );
+
+        let rule = AddEvenNumbersRule;
+        assert_eq!(rule.id(), AddEvenNumbersRule::static_id());
+
+        let rule: &dyn Rule<TestGameState, TestGameEvent> = &rule;
+        assert_eq!(rule.id(), AddEvenNumbersRule::static_id());
     }
 
     #[test]
     fn verify_rule_id_macro_with_custom_id() {
-        assert_eq!(SubtractTenRule::id(), RuleId("SubtractTenRuleId"));
+        assert_eq!(SubtractTenRule::static_id(), RuleId("SubtractTenRuleId"));
+
+        let rule = SubtractTenRule;
+        assert_eq!(rule.id(), SubtractTenRule::static_id());
+
+        let rule: &dyn Rule<TestGameState, TestGameEvent> = &rule;
+        assert_eq!(rule.id(), SubtractTenRule::static_id());
+    }
+
+    #[test]
+    fn verify_composite_rule_id() {
+        assert_eq!(
+            CompositeRule::<TestGameState, TestGameEvent>::static_id(),
+            RuleId("CompositeRule")
+        );
+
+        assert_eq!(
+            AddEvenNumbersThenSubtractTenRule::static_id(),
+            RuleId("AddEvenNumbersThenSubtractTenRule")
+        );
+
+        let composite_rule = AddEvenNumbersThenSubtractTenRule::new();
+        assert_eq!(
+            composite_rule.id(),
+            AddEvenNumbersThenSubtractTenRule::static_id()
+        );
+
+        let rule: &dyn Rule<TestGameState, TestGameEvent> = &composite_rule;
+        assert_eq!(rule.id(), AddEvenNumbersThenSubtractTenRule::static_id());
     }
 
     #[test]
