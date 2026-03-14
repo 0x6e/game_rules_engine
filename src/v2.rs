@@ -188,17 +188,28 @@ pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
     current_rule_chain: RuleList<GameStateT, GameEventT>,
     rule_stack: Vec<usize>,
+    started: bool,
     engine_status: EngineStatus,
+}
+
+impl<GameStateT: GameState, GameEventT: GameEvent> Default for RulesEngine<GameStateT, GameEventT> {
+    fn default() -> Self {
+        Self {
+            game_state: Default::default(),
+            current_rule_chain: Default::default(),
+            rule_stack: Default::default(),
+            started: false,
+            engine_status: EngineStatus::Ready,
+        }
+    }
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameEventT> {
     /// Creates a new [RulesEngine] with default game state and a specified rule chain.
     pub fn new(rule_chain: Vec<Box<dyn Rule<GameStateT, GameEventT>>>) -> Self {
         Self {
-            game_state: GameStateT::default(),
             current_rule_chain: rule_chain,
-            rule_stack: vec![0],
-            engine_status: EngineStatus::Ready,
+            ..Default::default()
         }
     }
 
@@ -210,8 +221,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         Self {
             game_state: initial_state,
             current_rule_chain: rule_chain,
-            rule_stack: vec![0],
-            engine_status: EngineStatus::Ready,
+            ..Default::default()
         }
     }
 
@@ -220,12 +230,10 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         &self.game_state
     }
 
-    /// Returns the index of the current rule being processed.
-    pub fn current_rule_index(&self) -> usize {
-        *self
-            .rule_stack
-            .first()
-            .expect("Rule stack should never be empty")
+    /// Returns a reference to the current rule stack, which represents the path through the rule
+    /// chain to the current rule being processed.
+    pub fn rule_stack(&self) -> &[usize] {
+        &self.rule_stack
     }
 
     /// Returns true if the engine is waiting for an event to be consumed, false otherwise.
@@ -241,6 +249,13 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
     /// Processes the rules in the rule chain, processing as many rules as possible until either all
     /// rules are processed or the engine is waiting for an event.
     pub fn process_rules(&mut self) {
+        if !self.started {
+            println!("[Engine] Starting rules engine...");
+            debug_assert!(self.rule_stack.is_empty());
+            self.rule_stack.push(0);
+            self.started = true;
+        }
+
         if self.is_waiting_for_event() {
             println!("[Engine] Waiting for event, skipping rule application");
             return;
@@ -363,16 +378,11 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         let siblings = Self::current_sibling_count(&self.current_rule_chain, &self.rule_stack);
 
         let Some(last) = self.rule_stack.last_mut() else {
-            debug_assert!(false, "rule_stack should not be empty");
             return;
         };
 
         *last += 1;
         if *last < siblings {
-            return;
-        }
-
-        if self.rule_stack.len() == 1 {
             return;
         }
 
@@ -551,7 +561,8 @@ mod tests {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersRule)];
         let engine = RulesEngine::new(rule_chain);
 
-        assert_eq!(engine.current_rule_index(), 0);
+        assert!(engine.rule_stack().is_empty());
+        assert_eq!(engine.started, false);
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
         assert_eq!(engine.game_state.sum, 0);
@@ -574,7 +585,8 @@ mod tests {
         engine.process_rules();
 
         // Verify that we are now waiting for an event
-        assert_eq!(engine.current_rule_index(), 0);
+        assert_eq!(engine.rule_stack(), [0]);
+        assert_eq!(engine.started, true);
         assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
         assert_eq!(engine.is_waiting_for_event(), true);
 
@@ -582,7 +594,8 @@ mod tests {
         engine.process_rules();
 
         // We should still be waiting for an event, and the rule should not have been applied again
-        assert_eq!(engine.current_rule_index(), 0);
+        assert_eq!(engine.rule_stack(), [0]);
+        assert_eq!(engine.started, true);
         assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
         assert_eq!(engine.is_waiting_for_event(), true);
     }
@@ -609,7 +622,8 @@ mod tests {
         engine.process_rules();
 
         // Verify that the rule was applied and completed
-        assert_eq!(engine.current_rule_index(), 1);
+        assert!(engine.rule_stack().is_empty());
+        assert_eq!(engine.started, true);
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
         assert_eq!(engine.game_state.sum, -10); // Default state is 0, so it should be -10 now
@@ -619,7 +633,7 @@ mod tests {
     fn test_rules_engine() {
         let rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
-        test_rules_engine_impl(rule_chain);
+        test_rules_engine_impl(rule_chain, vec![0]);
     }
 
     #[test]
@@ -630,7 +644,7 @@ mod tests {
             RuleId("TestCompositeRule"),
             inner_rule_chain,
         ))];
-        test_rules_engine_impl(rule_chain);
+        test_rules_engine_impl(rule_chain, vec![0, 0]);
     }
 
     #[test]
@@ -645,23 +659,23 @@ mod tests {
             RuleId("TestOuterCompositeRule"),
             inner_rule_chain,
         ))];
-        test_rules_engine_impl(rule_chain);
+        test_rules_engine_impl(rule_chain, vec![0, 0, 0]);
     }
 
     #[test]
     fn test_rules_engine_named_composite() {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersThenSubtractTenRule::new())];
-        test_rules_engine_impl(rule_chain);
+        test_rules_engine_impl(rule_chain, vec![0, 0]);
     }
 
-    fn test_rules_engine_impl(rule_chain: TestRuleList) {
-        let rule_chanin_end = rule_chain.len();
+    fn test_rules_engine_impl(rule_chain: TestRuleList, expected_rule_stack: Vec<usize>) {
         let mut engine = RulesEngine::new(rule_chain);
 
         engine.process_rules();
 
         let verify_rule_0_is_waiting_for_event = || {
-            assert_eq!(engine.current_rule_index(), 0);
+            assert_eq!(engine.rule_stack(), expected_rule_stack);
+            assert_eq!(engine.started, true);
             assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
             assert_eq!(engine.is_waiting_for_event(), true);
         };
@@ -689,7 +703,7 @@ mod tests {
         assert_eq!(engine.game_state.sum, -8);
 
         // Verify that the engine has moved to the next rule
-        assert_eq!(engine.current_rule_index(), rule_chanin_end);
+        assert!(engine.rule_stack().is_empty());
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
     }
