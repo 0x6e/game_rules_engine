@@ -188,6 +188,7 @@ pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
     current_rule_chain: RuleList<GameStateT, GameEventT>,
     rule_stack: Vec<usize>,
+    rule_stack_ids: Vec<RuleId>,
     started: bool,
     engine_status: EngineStatus,
 }
@@ -198,6 +199,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> Default for RulesEngine<GameS
             game_state: Default::default(),
             current_rule_chain: Default::default(),
             rule_stack: Default::default(),
+            rule_stack_ids: Default::default(),
             started: false,
             engine_status: EngineStatus::Ready,
         }
@@ -236,6 +238,12 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         &self.rule_stack
     }
 
+    /// Returns a reference to a vector of [RuleId]s representing the path through the rule chain to
+    /// the current rule being processed.
+    pub fn current_rule_id(&self) -> &Vec<RuleId> {
+        &self.rule_stack_ids
+    }
+
     /// Returns true if the engine is waiting for an event to be consumed, false otherwise.
     pub fn is_waiting_for_event(&self) -> bool {
         self.engine_status == EngineStatus::WaitingForEvent
@@ -252,7 +260,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         if !self.started {
             println!("[Engine] Starting rules engine...");
             debug_assert!(self.rule_stack.is_empty());
-            self.rule_stack.push(0);
+            self.descend_into_rulechain();
             self.started = true;
         }
 
@@ -271,7 +279,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         match rule.children() {
             Some(children) => {
                 debug_assert!(!children.is_empty());
-                self.rule_stack.push(0);
+                self.descend_into_rulechain();
                 self.process_rules();
             }
             None => {
@@ -369,6 +377,20 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         rules.get_mut(*rule_stack.last()?)
     }
 
+    /// Attempt to step down a level in the rule chain.
+    fn descend_into_rulechain(&mut self) {
+        self.rule_stack.push(0);
+        match Self::current_rule(&self.current_rule_chain, &self.rule_stack) {
+            Some(new_rule) => {
+                self.rule_stack_ids.push(new_rule.id());
+            }
+            None => {
+                self.rule_stack.pop();
+                println!("[Engine] No rules to apply");
+            }
+        }
+    }
+
     /// Advances the rule stack to the next rule. If the current rule has siblings, it will move to
     /// the next sibling. If the current rule is the last sibling, it will pop up to the parent rule
     /// and advance it, recursively advancing up the stack as necessary. If the stack is at the top
@@ -383,10 +405,17 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
 
         *last += 1;
         if *last < siblings {
+            let next_id = Self::current_rule(&self.current_rule_chain, &self.rule_stack)
+                .expect("Expected next rule to exist")
+                .id();
+            if let Some(last) = self.rule_stack_ids.last_mut() {
+                *last = next_id;
+            }
             return;
         }
 
         self.rule_stack.pop();
+        self.rule_stack_ids.pop();
         self.advance();
     }
 
@@ -562,6 +591,7 @@ mod tests {
         let engine = RulesEngine::new(rule_chain);
 
         assert!(engine.rule_stack().is_empty());
+        assert!(engine.current_rule_id().is_empty());
         assert_eq!(engine.started, false);
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
@@ -586,6 +616,7 @@ mod tests {
 
         // Verify that we are now waiting for an event
         assert_eq!(engine.rule_stack(), [0]);
+        assert_eq!(*engine.current_rule_id(), [AddEvenNumbersRule::static_id()]);
         assert_eq!(engine.started, true);
         assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
         assert_eq!(engine.is_waiting_for_event(), true);
@@ -595,6 +626,7 @@ mod tests {
 
         // We should still be waiting for an event, and the rule should not have been applied again
         assert_eq!(engine.rule_stack(), [0]);
+        assert_eq!(*engine.current_rule_id(), [AddEvenNumbersRule::static_id()]);
         assert_eq!(engine.started, true);
         assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
         assert_eq!(engine.is_waiting_for_event(), true);
@@ -633,48 +665,75 @@ mod tests {
     fn test_rules_engine() {
         let rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
-        test_rules_engine_impl(rule_chain, vec![0]);
+        test_rules_engine_impl(rule_chain, vec![0], vec![AddEvenNumbersRule::static_id()]);
     }
 
     #[test]
     fn test_rules_engine_composite() {
         let inner_rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
+        let composite_rule_id = RuleId("TestCompositeRule");
         let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
-            RuleId("TestCompositeRule"),
+            composite_rule_id,
             inner_rule_chain,
         ))];
-        test_rules_engine_impl(rule_chain, vec![0, 0]);
+        test_rules_engine_impl(
+            rule_chain,
+            vec![0, 0],
+            vec![composite_rule_id, AddEvenNumbersRule::static_id()],
+        );
     }
 
     #[test]
     fn test_rules_engine_nested_composite() {
         let inner_rule_chain: TestRuleList =
             vec![Box::new(AddEvenNumbersRule), Box::new(SubtractTenRule)];
+        let inner_composite_rule_id = RuleId("TestInnerCompositeRule");
         let inner_rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
-            RuleId("TestInnerCompositeRule"),
+            inner_composite_rule_id,
             inner_rule_chain,
         ))];
+        let outer_composite_rule_id = RuleId("TestOuterCompositeRule");
         let rule_chain: TestRuleList = vec![Box::new(CompositeRule::new(
-            RuleId("TestOuterCompositeRule"),
+            outer_composite_rule_id,
             inner_rule_chain,
         ))];
-        test_rules_engine_impl(rule_chain, vec![0, 0, 0]);
+        test_rules_engine_impl(
+            rule_chain,
+            vec![0, 0, 0],
+            vec![
+                outer_composite_rule_id,
+                inner_composite_rule_id,
+                AddEvenNumbersRule::static_id(),
+            ],
+        );
     }
 
     #[test]
     fn test_rules_engine_named_composite() {
         let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersThenSubtractTenRule::new())];
-        test_rules_engine_impl(rule_chain, vec![0, 0]);
+        test_rules_engine_impl(
+            rule_chain,
+            vec![0, 0],
+            vec![
+                AddEvenNumbersThenSubtractTenRule::static_id(),
+                AddEvenNumbersRule::static_id(),
+            ],
+        );
     }
 
-    fn test_rules_engine_impl(rule_chain: TestRuleList, expected_rule_stack: Vec<usize>) {
+    fn test_rules_engine_impl(
+        rule_chain: TestRuleList,
+        expected_rule_stack: Vec<usize>,
+        exected_rule_id: Vec<RuleId>,
+    ) {
         let mut engine = RulesEngine::new(rule_chain);
 
         engine.process_rules();
 
         let verify_rule_0_is_waiting_for_event = || {
             assert_eq!(engine.rule_stack(), expected_rule_stack);
+            assert_eq!(*engine.current_rule_id(), exected_rule_id);
             assert_eq!(engine.started, true);
             assert_eq!(engine.engine_status(), EngineStatus::WaitingForEvent);
             assert_eq!(engine.is_waiting_for_event(), true);
@@ -704,6 +763,7 @@ mod tests {
 
         // Verify that the engine has moved to the next rule
         assert!(engine.rule_stack().is_empty());
+        assert!(engine.current_rule_id().is_empty());
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
     }
