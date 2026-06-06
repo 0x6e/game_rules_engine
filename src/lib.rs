@@ -1,10 +1,10 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
-//! This module provides a rules engine for games, allowing for the definition and application of
+//! This crate provides a rules engine for games, allowing for the definition and application of
 //! game rules to a game state.
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;
 
 /// An identifier for a rule, which can be used for debugging, logging, and other purposes.
