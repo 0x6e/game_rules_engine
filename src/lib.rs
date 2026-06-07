@@ -49,7 +49,7 @@ macro_rules! impl_rule_id {
 }
 
 /// The possible results of a [Rule] consuming a game event.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum RuleResult {
     /// The rule has completed successfully, and the engine can proceed to the next rule.
     Complete,
@@ -183,6 +183,27 @@ pub enum EngineStatus {
     GameOver,
 }
 
+/// An enumeration representing events that the [RulesEngine] may report to an event sink.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EngineEvent {
+    /// A rule has started.
+    RuleEntered {
+        /// A vector of [RuleId]s representing the path through the rule chain to the rule that has been entered.
+        id: Vec<RuleId>,
+    },
+    /// A rule has ended.
+    RuleExited {
+        /// A vector of [RuleId]s representing the path through the rule chain to the rule that has been exited.
+        id: Vec<RuleId>,
+        /// The result of the rule.
+        result: RuleResult,
+    },
+    /// The current rule is waiting for a game event to occur.
+    WaitingForGameEvent,
+    /// The game is over.
+    GameOver,
+}
+
 /// A rules engine that processes a chain of rules against a game state and handles game events.
 pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     game_state: GameStateT,
@@ -191,6 +212,7 @@ pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     rule_stack_ids: Vec<RuleId>,
     started: bool,
     engine_status: EngineStatus,
+    event_sink: Option<Box<dyn FnMut(EngineEvent) + Send>>,
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> Default for RulesEngine<GameStateT, GameEventT> {
@@ -202,6 +224,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> Default for RulesEngine<GameS
             rule_stack_ids: Default::default(),
             started: false,
             engine_status: EngineStatus::Ready,
+            event_sink: None,
         }
     }
 }
@@ -225,6 +248,14 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             current_rule_chain: rule_chain,
             ..Default::default()
         }
+    }
+
+    /// Add an [EngineEvent] sink to the [RulesEngine].
+    pub fn with_event_sink(self, sink: impl FnMut(EngineEvent) + Send + 'static) -> Self {
+        // self.emit = Some(Box::new(sink));
+        let mut new = self;
+        new.event_sink = Some(Box::new(sink));
+        new
     }
 
     /// Returns a reference to the current game state.
@@ -330,15 +361,21 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         match result {
             RuleResult::Complete => {
                 self.engine_status = EngineStatus::Ready;
+                self.maybe_emit_event(EngineEvent::RuleExited {
+                    id: self.rule_stack_ids.clone(),
+                    result,
+                });
                 self.advance();
                 self.process_rules();
             }
             RuleResult::WaitingForEvent => {
                 self.engine_status = EngineStatus::WaitingForEvent;
+                self.maybe_emit_event(EngineEvent::WaitingForGameEvent);
             }
             RuleResult::GameOver => {
                 println!("[Engine] Game over");
                 self.engine_status = EngineStatus::GameOver;
+                self.maybe_emit_event(EngineEvent::GameOver);
             }
         }
     }
@@ -383,6 +420,9 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         match Self::current_rule(&self.current_rule_chain, &self.rule_stack) {
             Some(new_rule) => {
                 self.rule_stack_ids.push(new_rule.id());
+                self.maybe_emit_event(EngineEvent::RuleEntered {
+                    id: self.rule_stack_ids.clone(),
+                });
             }
             None => {
                 self.rule_stack.pop();
@@ -411,6 +451,9 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             if let Some(last) = self.rule_stack_ids.last_mut() {
                 *last = next_id;
             }
+            self.maybe_emit_event(EngineEvent::RuleEntered {
+                id: self.rule_stack_ids.clone(),
+            });
             return;
         }
 
@@ -437,10 +480,19 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
 
         rules.len()
     }
+
+    /// Emit the event if there is a valid event sink.
+    fn maybe_emit_event(&mut self, event: EngineEvent) {
+        if let Some(event_sink) = &mut self.event_sink {
+            (event_sink)(event);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::mpsc::channel;
+
     use serde::Deserialize;
 
     use super::*;
@@ -766,5 +818,77 @@ mod tests {
         assert!(engine.current_rule_id().is_empty());
         assert_eq!(engine.engine_status(), EngineStatus::Ready);
         assert_eq!(engine.is_waiting_for_event(), false);
+    }
+
+    #[test]
+    fn test_game_event_sink() {
+        let rule_chain: TestRuleList = vec![Box::new(AddEvenNumbersThenSubtractTenRule::new())];
+        let (tx, rx) = channel();
+        let mut engine = RulesEngine::new(rule_chain).with_event_sink({
+            move |event: EngineEvent| {
+                if let Err(e) = tx.send(event) {
+                    panic!("Failed to send event: {}", e);
+                }
+            }
+        });
+
+        engine.process_rules();
+
+        let received_events: Vec<EngineEvent> = rx.try_iter().collect();
+        assert_eq!(
+            received_events,
+            vec![
+                EngineEvent::RuleEntered {
+                    id: vec![AddEvenNumbersThenSubtractTenRule::static_id()]
+                },
+                EngineEvent::RuleEntered {
+                    id: vec![
+                        AddEvenNumbersThenSubtractTenRule::static_id(),
+                        AddEvenNumbersRule::static_id()
+                    ]
+                },
+                EngineEvent::WaitingForGameEvent,
+            ]
+        );
+
+        // Validating invalid events should not cause events to be sent.
+        let invalid_event = TestGameEvent::AddNumber { number: 1 };
+        assert!(!engine.validate(&invalid_event));
+        let received_events: Vec<EngineEvent> = rx.try_iter().collect();
+        assert!(received_events.is_empty());
+
+        // Validating valid events should not cause events to be sent.
+        let valid_event = TestGameEvent::AddNumber { number: 6 };
+        assert!(engine.validate(&valid_event));
+        let received_events: Vec<EngineEvent> = rx.try_iter().collect();
+        assert!(received_events.is_empty());
+
+        engine.consume(&valid_event);
+        let received_events: Vec<EngineEvent> = rx.try_iter().collect();
+        assert_eq!(
+            received_events,
+            vec![
+                EngineEvent::RuleExited {
+                    id: vec![
+                        AddEvenNumbersThenSubtractTenRule::static_id(),
+                        AddEvenNumbersRule::static_id()
+                    ],
+                    result: RuleResult::Complete,
+                },
+                EngineEvent::RuleEntered {
+                    id: vec![
+                        AddEvenNumbersThenSubtractTenRule::static_id(),
+                        SubtractTenRule::static_id()
+                    ]
+                },
+                EngineEvent::RuleExited {
+                    id: vec![
+                        AddEvenNumbersThenSubtractTenRule::static_id(),
+                        SubtractTenRule::static_id()
+                    ],
+                    result: RuleResult::Complete,
+                },
+            ]
+        );
     }
 }
