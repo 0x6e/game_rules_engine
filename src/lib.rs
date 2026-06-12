@@ -212,7 +212,7 @@ pub struct RulesEngine<GameStateT: GameState, GameEventT: GameEvent> {
     rule_stack_ids: Vec<RuleId>,
     started: bool,
     engine_status: EngineStatus,
-    event_sink: Option<Box<dyn FnMut(EngineEvent) + Send>>,
+    event_sink: Option<Box<dyn FnMut(EngineEvent) + Send + Sync>>,
 }
 
 impl<GameStateT: GameState, GameEventT: GameEvent> Default for RulesEngine<GameStateT, GameEventT> {
@@ -251,7 +251,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
     }
 
     /// Add an [EngineEvent] sink to the [RulesEngine].
-    pub fn with_event_sink(self, sink: impl FnMut(EngineEvent) + Send + 'static) -> Self {
+    pub fn with_event_sink(self, sink: impl FnMut(EngineEvent) + Send + Sync + 'static) -> Self {
         // self.emit = Some(Box::new(sink));
         let mut new = self;
         new.event_sink = Some(Box::new(sink));
