@@ -33,16 +33,21 @@ pub trait RuleIdentity {
 #[macro_export]
 macro_rules! impl_rule_id {
     ($t:ty, $id:expr) => {
+        impl $t {
+            /// The [RuleId] for this rule.
+            pub const ID: RuleId = RuleId($id);
+        }
+
         impl RuleIdentity for $t {
             fn id(&self) -> RuleId {
-                Self::static_id()
+                Self::ID
             }
 
             fn static_id() -> RuleId
             where
                 Self: Sized,
             {
-                RuleId($id)
+                Self::ID
             }
         }
     };
@@ -666,6 +671,20 @@ mod tests {
 
         let rule: &dyn Rule<TestGameState, TestGameEvent> = &composite_rule;
         assert_eq!(rule.id(), AddEvenNumbersThenSubtractTenRule::static_id());
+    }
+
+    #[test]
+    fn verify_rule_id_matching() {
+        let rule_chain = vec![AddEvenNumbersRule::ID];
+
+        match &rule_chain[..] {
+            [AddEvenNumbersRule::ID] => assert!(true),
+            [AddEvenNumbersThenSubtractTenRule::ID] => assert!(
+                false,
+                "Expected AddEvenNumbersRule::ID, got AddEvenNumbersThenSubtractTenRule::ID"
+            ),
+            _ => assert!(false, "Expected AddEvenNumbersRule::ID, got something else"),
+        }
     }
 
     #[test]
