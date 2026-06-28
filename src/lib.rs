@@ -9,6 +9,7 @@ use std::{
     fmt::Debug,
     sync::mpsc::{Receiver, channel},
 };
+use tracing::{debug, error, info};
 
 /// An identifier for a rule, which can be used for debugging, logging, and other purposes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -306,7 +307,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         let (tx, rx) = channel();
         self.event_sink = Some(Box::new(move |event| {
             if let Err(error) = tx.send(event.clone()) {
-                println!("Failed to send {:?}: {}", event, error);
+                error!("Failed to send {:?}: {}", event, error);
             }
         }));
         rx
@@ -322,21 +323,21 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
     /// called recursively.
     fn process_rules_impl(&mut self) {
         if !self.started {
-            println!("[Engine] Starting rules engine...");
+            info!("Starting rules engine...");
             debug_assert!(self.rule_stack.is_empty());
             self.descend_into_rulechain();
             self.started = true;
         }
 
         if self.is_waiting_for_event() {
-            println!("[Engine] Waiting for event, skipping rule application");
+            info!("Waiting for event, skipping rule application");
             return;
         }
 
         let Some(rule) =
             Self::current_rule_mut(self.current_rule_chain.as_mut_slice(), &self.rule_stack)
         else {
-            println!("[Engine] Turn complete!");
+            info!("[Engine] Turn complete!");
             return;
         };
 
@@ -358,7 +359,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
         match Self::current_rule(self.current_rule_chain.as_slice(), &self.rule_stack) {
             Some(current_rule) => current_rule.validate(&self.game_state, event),
             None => {
-                println!("[Engine] No current rule to validate against");
+                debug!("No current rule to validate against");
                 false
             }
         }
@@ -370,13 +371,13 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
     /// an event.
     pub fn consume(&mut self, event: &GameEventT) -> Vec<EngineEvent> {
         if !self.is_waiting_for_event() {
-            println!("[Engine] Ingorning unexpected event: '{:?}'", event);
+            debug!("Ingorning unexpected event: '{:?}'", event);
             return Vec::new();
         }
 
         let rx = self.setup_sink();
 
-        println!("[Engine] Received event '{:?}', resuming...", event);
+        debug!("Received event '{:?}', resuming...", event);
         debug_assert!(self.validate(event));
 
         match Self::current_rule_mut(self.current_rule_chain.as_mut_slice(), &self.rule_stack) {
@@ -385,7 +386,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
                 self.consume_rule_result(result);
             }
             None => {
-                println!("[Engine] No current rule to consume");
+                debug!("No current rule to consume");
             }
         }
 
@@ -411,7 +412,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
                 self.maybe_emit_event(EngineEvent::WaitingForGameEvent);
             }
             RuleResult::GameOver => {
-                println!("[Engine] Game over");
+                info!("Game over");
                 self.engine_status = EngineStatus::GameOver;
                 self.maybe_emit_event(EngineEvent::GameOver);
             }
@@ -464,7 +465,7 @@ impl<GameStateT: GameState, GameEventT: GameEvent> RulesEngine<GameStateT, GameE
             }
             None => {
                 self.rule_stack.pop();
-                println!("[Engine] No rules to apply");
+                debug!("No rules to apply");
             }
         }
     }
